@@ -361,6 +361,7 @@ class SearchPanel(ttk.Frame):
             menu.add_command(label="🔗 在浏览器打开", command=self._open_selected_in_browser)
         else:
             menu.add_command(label="📖 阅读", command=self._read_selected)
+            menu.add_command(label="✏ 编辑标题", command=self._edit_title_selected)
             menu.add_command(label="🏷 编辑标签", command=self._edit_tags_selected)
             menu.add_command(label="🔗 在浏览器打开原文", command=self._open_selected_in_browser)
             menu.add_separator()
@@ -457,7 +458,46 @@ class SearchPanel(ttk.Frame):
         if article:
             ReaderWindow(self.winfo_toplevel(), article, self.db, self.on_status)
 
-    # ---- 编辑标签 ----
+    # ---- 编辑标题 ----
+    def _edit_title_selected(self):
+        if self.mode != self.MODE_COLLECTION:
+            return
+        indices = self._get_selected_indices()
+        if not indices:
+            self.on_status("请先选择要编辑的文章")
+            return
+        idx = indices[0]
+        aid = self._collection_items[idx]["id"]
+        article = self.db.get_article(aid)
+        old_title = article.get("title", "") if article else ""
+
+        # 自定义标题编辑对话框
+        win = ttk.Toplevel(self.winfo_toplevel())
+        win.title("编辑标题")
+        win.geometry("450x150")
+        win.transient(self.winfo_toplevel())
+        ttk.Label(win, text="✏ 编辑标题", font=("微软雅黑", 12, "bold")).pack(pady=10)
+        title_var = ttk.StringVar(value=old_title)
+        entry = ttk.Entry(win, textvariable=title_var, font=("微软雅黑", 11), width=50)
+        entry.pack(padx=15, pady=5)
+        entry.focus_set()
+        entry.select_range(0, END)
+
+        def save_title():
+            new_title = title_var.get().strip()
+            if new_title:
+                self.db.update_article(aid, title=new_title)
+                self.on_status("标题已更新")
+                self.show_collection()
+            win.destroy()
+
+        entry.bind("<Return>", lambda e: save_title())
+        ttk.Button(win, text="保存", bootstyle=SUCCESS, command=save_title).pack(pady=5)
+        from utils.helpers import center_on_parent
+        center_on_parent(win, self.winfo_toplevel())
+        win.grab_set()
+
+    # ---- 编辑标签（批量） ----
     def _edit_tags_selected(self):
         if self.mode != self.MODE_COLLECTION:
             return
@@ -466,10 +506,10 @@ class SearchPanel(ttk.Frame):
             self.on_status("请先选择要编辑标签的文章")
             return
         from gui.dialogs import TagEditDialog
-        for idx in indices:
-            aid = self._collection_items[idx]["id"]
-            TagEditDialog(self.winfo_toplevel(), self.db, aid,
-                          on_done=lambda: (self.on_refresh(), self.show_collection()))
+        # 批量模式：传入所有选中文章的 ID
+        article_ids = [self._collection_items[idx]["id"] for idx in indices]
+        TagEditDialog(self.winfo_toplevel(), self.db, article_ids,
+                      on_done=lambda: (self.on_refresh(), self.show_collection()))
 
     # ---- 导出 ----
     def _export_selected(self):
@@ -535,21 +575,8 @@ class SearchPanel(ttk.Frame):
     #  辅助
     # ==================================================================
     def _set_buttons(self):
-        """根据模式显示/隐藏按钮。"""
-        # 先全部隐藏
-        self.collect_btn.pack_forget()
-        self.open_btn.pack_forget()
-        self.read_btn.pack_forget()
-        self.export_btn.pack_forget()
-        self.delete_btn.pack_forget()
-        if self.mode == self.MODE_SEARCH:
-            self.collect_btn.pack(side=LEFT, padx=4)
-            self.open_btn.pack(side=LEFT, padx=4)
-        else:
-            self.open_btn.pack(side=LEFT, padx=4)
-            self.read_btn.pack(side=LEFT, padx=4)
-            self.export_btn.pack(side=LEFT, padx=4)
-            self.delete_btn.pack(side=LEFT, padx=4)
+        """所有按钮始终启用，靠方法内模式检查防止误操作。"""
+        pass
 
     def _start_progress(self):
         self.progress.pack(side=LEFT, padx=8, before=self.count_label)

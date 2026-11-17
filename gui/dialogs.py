@@ -265,25 +265,42 @@ class TagEditDialog:
     标签编辑对话框 —— 为已收藏文章添加/移除标签。
     """
 
-    def __init__(self, parent, db, article_id, on_done=None):
+    def __init__(self, parent, db, article_ids, on_done=None):
+        """article_ids: 单个 ID (int) 或 ID 列表 (list)"""
         self.db = db
-        self.article_id = article_id
+        if isinstance(article_ids, (list, tuple)):
+            self.article_ids = list(article_ids)
+        else:
+            self.article_ids = [article_ids]
         self.on_done = on_done
 
-        article = db.get_article(article_id)
-        title = article.get("title", "") if article else ""
-        current_tags = set(article.get("tags", [])) if article else set()
+        # 获取当前标签（多篇取交集）
+        all_tags = []
+        for aid in self.article_ids:
+            art = db.get_article(aid)
+            if art:
+                all_tags.append(set(art.get("tags", [])))
+        current_tags = set.intersection(*all_tags) if len(all_tags) > 1 else (all_tags[0] if all_tags else set())
         self.tag_vars = {}
 
+        batch = len(self.article_ids) > 1
         self.win = ttk.Toplevel(parent)
         self.win.title("编辑标签")
         self.win.geometry("400x450")
         self.win.transient(parent)
 
-        ttk.Label(self.win, text="🏷 编辑标签",
-                  font=("微软雅黑", 14, "bold")).pack(pady=(15, 5))
-        ttk.Label(self.win, text=title[:40], bootstyle=SECONDARY,
-                  font=("微软雅黑", 9)).pack(pady=(0, 10))
+        if batch:
+            ttk.Label(self.win, text="🏷 批量编辑标签",
+                      font=("微软雅黑", 14, "bold")).pack(pady=(15, 5))
+            ttk.Label(self.win, text=f"已选中 {len(self.article_ids)} 篇文章",
+                      bootstyle=SECONDARY, font=("微软雅黑", 9)).pack(pady=(0, 10))
+        else:
+            art = db.get_article(self.article_ids[0])
+            title = art.get("title", "") if art else ""
+            ttk.Label(self.win, text="🏷 编辑标签",
+                      font=("微软雅黑", 14, "bold")).pack(pady=(15, 5))
+            ttk.Label(self.win, text=title[:40], bootstyle=SECONDARY,
+                      font=("微软雅黑", 9)).pack(pady=(0, 10))
 
         frame = ttk.Labelframe(self.win, text="标签", padding=15)
         frame.pack(fill=BOTH, expand=True, padx=15, pady=5)
@@ -358,7 +375,8 @@ class TagEditDialog:
 
     def _save(self):
         tags = [n for n, v in self.tag_vars.items() if v.get()]
-        self.db.set_article_tags(self.article_id, tags)
+        for aid in self.article_ids:
+            self.db.set_article_tags(aid, tags)
         if self.on_done:
             self.on_done()
         self.win.grab_release()
@@ -458,9 +476,27 @@ class UrlCollectDialog:
 
         self.win = ttk.Toplevel(parent)
         self.win.title("输入链接收藏")
-        self.win.geometry("500x520")
+        self.win.geometry("500x580")
         self.win.transient(parent)
 
+        # 先 pack 底部固定区域（按钮 + 状态），确保始终可见
+        btn_frame = ttk.Frame(self.win)
+        btn_frame.pack(side=BOTTOM, fill=X, padx=15, pady=10)
+        self.collect_btn = ttk.Button(btn_frame, text="✅ 收藏",
+                                      bootstyle=SUCCESS, command=self._start)
+        self.collect_btn.pack(side=LEFT, padx=5)
+        ttk.Button(btn_frame, text="关闭", bootstyle=SECONDARY,
+                   command=self._close).pack(side=LEFT, padx=5)
+
+        self.status_var = ttk.StringVar(value="")
+        self.status_label = ttk.Label(self.win, textvariable=self.status_var,
+                                      bootstyle=SECONDARY, wraplength=440)
+        self.status_label.pack(side=BOTTOM, fill=X, padx=15, pady=(0, 5))
+
+        self.progress_bar = ttk.Progressbar(self.win, mode=INDETERMINATE,
+                                            length=300, bootstyle=SUCCESS)
+
+        # 内容区（从上往下 pack）
         ttk.Label(self.win, text="📋 输入链接收藏",
                   font=("微软雅黑", 14, "bold")).pack(pady=(15, 5))
         ttk.Label(self.win, text="粘贴微信文章链接或搜狗链接，自动抓取并收藏",
@@ -512,24 +548,6 @@ class UrlCollectDialog:
         ttk.Entry(new_tag_frame, textvariable=self.new_tag_var, width=18).pack(side=LEFT, padx=5)
         ttk.Button(new_tag_frame, text="添加", bootstyle=(SECONDARY, OUTLINE),
                    command=self._add_new_tag).pack(side=LEFT)
-
-        # 状态区
-        self.status_var = ttk.StringVar(value="")
-        self.status_label = ttk.Label(self.win, textvariable=self.status_var,
-                                      bootstyle=SECONDARY, wraplength=440)
-        self.status_label.pack(fill=X, padx=15, pady=5)
-
-        self.progress_bar = ttk.Progressbar(self.win, mode=INDETERMINATE,
-                                            length=300, bootstyle=SUCCESS)
-
-        # 按钮
-        btn_frame = ttk.Frame(self.win)
-        btn_frame.pack(side=BOTTOM, fill=X, padx=15, pady=15)
-        self.collect_btn = ttk.Button(btn_frame, text="✅ 收藏",
-                                      bootstyle=SUCCESS, command=self._start)
-        self.collect_btn.pack(side=LEFT, padx=5)
-        ttk.Button(btn_frame, text="关闭", bootstyle=SECONDARY,
-                   command=self._close).pack(side=LEFT, padx=5)
 
         center_on_parent(self.win, parent)
         url_entry.focus_set()
