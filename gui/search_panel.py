@@ -11,10 +11,8 @@ from ttkbootstrap.dialogs import Messagebox
 
 from core.searcher import Searcher
 from core.fetcher import Fetcher
-from gui.reader_window import ReaderWindow
 from utils.helpers import open_url
 from utils.config import Config
-from gui.web_viewer import open_in_app, open_html_in_app
 
 
 class SearchPanel(ttk.Frame):
@@ -143,14 +141,6 @@ class SearchPanel(ttk.Frame):
         self.collect_btn = ttk.Button(btn_frame, text="📥 收藏选中",
                                       bootstyle=SUCCESS, command=self._collect_selected)
         self.collect_btn.pack(side=LEFT, padx=4)
-
-        self.open_btn = ttk.Button(btn_frame, text="🔗 打开",
-                                   bootstyle=INFO, command=self._open_selected_in_browser)
-        self.open_btn.pack(side=LEFT, padx=4)
-
-        self.read_btn = ttk.Button(btn_frame, text="📖 阅读",
-                                   bootstyle=INFO, command=self._read_selected)
-        self.read_btn.pack(side=LEFT, padx=4)
 
         self.export_btn = ttk.Button(btn_frame, text="📤 导出",
                                      bootstyle=(WARNING, OUTLINE), command=self._export_selected)
@@ -452,70 +442,13 @@ class SearchPanel(ttk.Frame):
         menu = ttk.Menu(self, tearoff=False)
         if self.mode == self.MODE_SEARCH:
             menu.add_command(label="📥 收藏选中", command=self._collect_selected)
-            menu.add_command(label="🔗 在浏览器打开", command=self._open_selected_in_browser)
         else:
-            menu.add_command(label="📖 阅读", command=self._read_selected)
             menu.add_command(label="✏ 编辑标题", command=self._edit_title_selected)
             menu.add_command(label="🏷 编辑标签", command=self._edit_tags_selected)
-            menu.add_command(label="🔗 在浏览器打开原文", command=self._open_selected_in_browser)
             menu.add_separator()
             menu.add_command(label="📤 导出选中", command=self._export_selected)
             menu.add_command(label="🗑 删除选中", command=self._delete_selected)
         menu.tk_popup(event.x_root, event.y_root)
-
-    def _open_selected_in_browser(self):
-        """在下方浏览器面板中打开选中文章。"""
-        indices = self._get_selected_indices()
-        if not indices:
-            self.on_status("请先选中一篇文章再点击打开")
-            return
-        if self.mode == self.MODE_SEARCH:
-            for idx in indices:
-                r = self._search_results[idx]
-                if r.link:
-                    self._load_in_browser_resolved(r.link, r.title[:30])
-                    break
-            else:
-                self.on_status("该文章无链接")
-        else:
-            for idx in indices:
-                a = self._collection_items[idx]
-                url = a.get("url", "")
-                if url:
-                    self._load_in_browser(url, a.get("title", "文章阅读")[:30])
-                    break
-            else:
-                self.on_status("该文章无链接")
-
-    def _open_in_app_resolved(self, sogou_link, title):
-        """解析搜狗链接获取微信真实链接和内容，然后应用内打开。"""
-        self.on_status(f"正在解析链接: {title}...")
-
-        def worker():
-            try:
-                art = self.fetcher.fetch(sogou_link)
-                if art.success and art.content_html:
-                    # 有全文 HTML，本地渲染
-                    full_html = "<html><head><meta charset='utf-8'></head><body style='max-width:677px;margin:0 auto;padding:20px;font-family:sans-serif'>" + art.content_html + "</body></html>"
-                    self.after(0, lambda: self._do_open_html(full_html, title))
-                else:
-                    # 无全文，用真实链接打开
-                    real_url = art.real_url or sogou_link
-                    self.after(0, lambda: self._do_open_in_app(real_url, title))
-            except Exception:
-                self.after(0, lambda: self._do_open_in_app(sogou_link, title))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _do_open_in_app(self, url, title):
-        """在应用内打开 URL。"""
-        ok = open_in_app(url, title, parent=self.winfo_toplevel())
-        self.on_status("已在应用内打开" if ok else "打开失败")
-
-    def _do_open_html(self, html, title):
-        """在应用内渲染 HTML。"""
-        ok = open_in_app("", title, parent=self.winfo_toplevel(), html_content=html)
-        self.on_status("已在应用内打开" if ok else "打开失败")
 
     def _toggle_select_all(self):
         items = self.tree.get_children()
@@ -566,18 +499,6 @@ class SearchPanel(ttk.Frame):
                       fetcher=self.fetcher, on_done=on_done)
 
     # ---- 阅读 ----
-    def _read_selected(self):
-        if self.mode != self.MODE_COLLECTION:
-            return
-        indices = self._get_selected_indices()
-        if not indices:
-            self.on_status("请先选择要阅读的文章")
-            return
-        idx = indices[0]
-        article = self.db.get_article(self._collection_items[idx]["id"])
-        if article:
-            ReaderWindow(self.winfo_toplevel(), article, self.db, self.on_status)
-
     # ---- 编辑标题 ----
     def _edit_title_selected(self):
         if self.mode != self.MODE_COLLECTION:
