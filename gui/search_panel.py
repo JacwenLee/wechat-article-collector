@@ -87,8 +87,16 @@ class SearchPanel(ttk.Frame):
         self.page_label = ttk.Label(search_frame, text="", bootstyle=SECONDARY)
         self.page_label.pack(side=LEFT, padx=8)
 
+        # ---- 垂直分割：上方列表+按钮，下方嵌入式浏览器 ----
+        vpaned = ttk.Panedwindow(self, orient=VERTICAL)
+        vpaned.pack(fill=BOTH, expand=True, padx=4, pady=4)
+
+        # ===== 上方区域 =====
+        top_pane = ttk.Frame(vpaned)
+        vpaned.add(top_pane, weight=2)
+
         # ---- 结果列表 ----
-        list_frame = ttk.Frame(self)
+        list_frame = ttk.Frame(top_pane)
         list_frame.pack(fill=BOTH, expand=True, padx=8, pady=4)
 
         # Treeview
@@ -118,13 +126,13 @@ class SearchPanel(ttk.Frame):
 
         # ---- 摘要预览 ----
         self.summary_var = ttk.StringVar(value="")
-        summary_label = ttk.Label(self, textvariable=self.summary_var,
+        summary_label = ttk.Label(top_pane, textvariable=self.summary_var,
                                   font=("微软雅黑", 9), bootstyle=SECONDARY,
                                   wraplength=700, justify=LEFT)
         summary_label.pack(fill=X, padx=12, pady=(0, 4))
 
         # ---- 操作按钮栏 ----
-        btn_frame = ttk.Frame(self)
+        btn_frame = ttk.Frame(top_pane)
         btn_frame.pack(fill=X, padx=8, pady=(0, 4))
 
         self.select_all_var = ttk.BooleanVar(value=False)
@@ -158,7 +166,77 @@ class SearchPanel(ttk.Frame):
         # 进度条
         self.progress = ttk.Progressbar(btn_frame, mode=INDETERMINATE,
                                         length=120, bootstyle=SUCCESS)
-        # 不常驻，按需 pack
+
+        # ===== 下方区域：嵌入式浏览器 =====
+        bottom_pane = ttk.Frame(vpaned)
+        vpaned.add(bottom_pane, weight=3)
+
+        # 浏览器工具栏
+        browser_bar = ttk.Frame(bottom_pane, bootstyle=SECONDARY)
+        browser_bar.pack(fill=X, padx=2, pady=2)
+        self.browser_title_var = ttk.StringVar(value="文章预览")
+        ttk.Label(browser_bar, textvariable=self.browser_title_var,
+                  font=("微软雅黑", 10, "bold"), bootstyle=INVERSE).pack(side=LEFT, padx=8)
+        ttk.Button(browser_bar, text="刷新", bootstyle=(SECONDARY, OUTLINE),
+                   command=self._refresh_browser, width=6).pack(side=RIGHT, padx=4)
+        ttk.Button(browser_bar, text="外部打开", bootstyle=(SECONDARY, OUTLINE),
+                   command=self._open_browser_external, width=8).pack(side=RIGHT, padx=4)
+
+        # tkinterweb HtmlFrame
+        try:
+            from tkinterweb import HtmlFrame
+            self.browser_frame = HtmlFrame(bottom_pane, messages_enabled=False)
+            self.browser_frame.pack(fill=BOTH, expand=True, padx=2, pady=2)
+            self._browser_ok = True
+        except Exception:
+            self.browser_frame = ttk.ScrolledText(bottom_pane, font=("微软雅黑", 11), wrap=WORD)
+            self.browser_frame.pack(fill=BOTH, expand=True, padx=2, pady=2)
+            self._browser_ok = False
+
+        self._current_browser_url = ""
+
+    # ==================================================================
+    #  嵌入式浏览器
+    # ==================================================================
+    def _load_in_browser(self, url, title="文章阅读"):
+        """在下方嵌入式浏览器中加载 URL。"""
+        self._current_browser_url = url
+        self.browser_title_var.set(title[:50])
+        self.on_status(f"正在加载: {title[:30]}...")
+        if self._browser_ok:
+            try:
+                self.browser_frame.load_url(url)
+            except Exception:
+                self.browser_frame.load_html(f"<html><body><h2>加载失败</h2><p>URL: {url}</p></body></html>")
+        else:
+            self.browser_frame.delete("1.0", END)
+            self.browser_frame.insert("1.0", f"加载: {url}\n\n（tkinterweb 不可用，请点击「外部打开」在浏览器中查看）")
+        self.on_status(f"已加载: {title[:30]}")
+
+    def _load_in_browser_resolved(self, sogou_link, title="文章阅读"):
+        """解析搜狗链接获取真实 URL，然后在浏览器中加载。"""
+        self.browser_title_var.set(title[:50])
+        self.on_status(f"正在解析链接: {title[:30]}...")
+
+        def worker():
+            try:
+                art = self.fetcher.fetch(sogou_link)
+                real_url = art.real_url or sogou_link
+                self.after(0, lambda: self._load_in_browser(real_url, title))
+            except Exception:
+                self.after(0, lambda: self._load_in_browser(sogou_link, title))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _refresh_browser(self):
+        """刷新当前页面。"""
+        if self._current_browser_url:
+            self._load_in_browser(self._current_browser_url, self.browser_title_var.get())
+
+    def _open_browser_external(self):
+        """在外部浏览器中打开当前页面。"""
+        if self._current_browser_url:
+            open_url(self._current_browser_url)
 
     # ==================================================================
     #  搜索模式
@@ -316,20 +394,28 @@ class SearchPanel(ttk.Frame):
     def _on_double_click(self, event):
         """双击事件处理。"""
         if self.mode == self.MODE_SEARCH:
-            # 搜索模式: 解析真实链接后应用内打开
+            # 搜索模式: 解析链接后在下方浏览器加载
             iid = self.tree.identify_row(event.y) or self.tree.focus()
             if iid and iid in self._item_map:
                 idx = self._item_map[iid]
                 r = self._search_results[idx]
                 if r.link:
-                    self._open_in_app_resolved(r.link, r.title[:30])
+                    self._load_in_browser_resolved(r.link, r.title[:30])
                 else:
                     self.on_status("该文章无链接")
             else:
                 self.on_status("未识别到行")
         else:
-            # 收藏库模式: 打开阅读窗口
-            self._read_selected()
+            # 收藏库模式: 在下方浏览器加载
+            indices = self._get_selected_indices()
+            if indices:
+                idx = indices[0]
+                a = self._collection_items[idx]
+                url = a.get("url", "")
+                if url:
+                    self._load_in_browser(url, a.get("title", "文章阅读")[:30])
+                else:
+                    self.on_status("该文章无链接")
 
     def _on_select(self, event):
         iid = self.tree.focus()
@@ -369,7 +455,7 @@ class SearchPanel(ttk.Frame):
         menu.tk_popup(event.x_root, event.y_root)
 
     def _open_selected_in_browser(self):
-        """在浏览器中打开选中文章的链接。"""
+        """在下方浏览器面板中打开选中文章。"""
         indices = self._get_selected_indices()
         if not indices:
             self.on_status("请先选中一篇文章再点击打开")
@@ -378,7 +464,7 @@ class SearchPanel(ttk.Frame):
             for idx in indices:
                 r = self._search_results[idx]
                 if r.link:
-                    self._open_in_app_resolved(r.link, r.title[:30])
+                    self._load_in_browser_resolved(r.link, r.title[:30])
                     break
             else:
                 self.on_status("该文章无链接")
@@ -387,15 +473,7 @@ class SearchPanel(ttk.Frame):
                 a = self._collection_items[idx]
                 url = a.get("url", "")
                 if url:
-                    title = a.get("title", "文章阅读")[:30]
-                    content_html = a.get("content", "")
-                    self.on_status(f"正在打开: {title}...")
-                    if content_html:
-                        full_html = "<html><head><meta charset='utf-8'></head><body style='max-width:677px;margin:0 auto;padding:20px;font-family:sans-serif'>" + content_html + "</body></html>"
-                        ok = open_in_app(url, title, parent=self.winfo_toplevel(), html_content=full_html)
-                    else:
-                        ok = open_in_app(url, title, parent=self.winfo_toplevel())
-                    self.on_status("已在应用内打开" if ok else "打开失败")
+                    self._load_in_browser(url, a.get("title", "文章阅读")[:30])
                     break
             else:
                 self.on_status("该文章无链接")
