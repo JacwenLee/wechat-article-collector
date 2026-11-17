@@ -1,0 +1,13 @@
+{
+  "theme": "litera",
+  "window_geometry": "1100x700",
+  "search_history": [
+    "agent"
+  ],
+  "request_min_interval": 2.0,
+  "request_max_interval": 5.0,
+  "timeout": 15,
+  "proxy": "",
+  "max_pages": 3,
+  "retry_count": 3
+}

@@ -1,12 +1,11 @@
 """
-HTTP 客户端封装 —— 带随机 UA 轮换、Cookie 管理、请求间隔控制。
+HTTP 客户端封装 —— 带随机 UA 轮换、Cookie 管理、请求间隔控制、重试机制。
 降低被搜狗/微信拦截的概率。
 """
 
 import random
 import time
 import threading
-from datetime import datetime
 
 import requests
 
@@ -32,24 +31,28 @@ WECHAT_UA = (
 class HttpClient:
     """带反爬策略的 requests 封装（线程安全）。"""
 
-    def __init__(self, min_interval=2.0, max_interval=5.0, timeout=15):
+    def __init__(self, min_interval=2.0, max_interval=5.0, timeout=15,
+                 retry=3, proxy=""):
         self.min_interval = min_interval
         self.max_interval = max_interval
         self.timeout = timeout
+        self.retry = retry
         self.session = requests.Session()
+        if proxy:
+            self.session.proxies = {"http": proxy, "https": proxy}
         self._lock = threading.Lock()
         self._last_request_time = 0.0
 
     # ------------------------------------------------------------------
-    #  内部工具
-    # ------------------------------------------------------------------
     def _wait_interval(self):
-        """请求间隔随机延迟，降低触发验证码的概率。"""
+        """请求间隔随机延迟（不持锁睡眠）。"""
         with self._lock:
             elapsed = time.time() - self._last_request_time
             needed = random.uniform(self.min_interval, self.max_interval)
-            if elapsed < needed:
-                time.sleep(needed - elapsed)
+        wait = max(0, needed - elapsed)
+        if wait > 0:
+            time.sleep(wait)
+        with self._lock:
             self._last_request_time = time.time()
 
     def _make_headers(self, use_wechat_ua=False, extra=None):
@@ -67,21 +70,28 @@ class HttpClient:
         return headers
 
     # ------------------------------------------------------------------
-    #  公开接口
-    # ------------------------------------------------------------------
     def get(self, url, params=None, use_wechat_ua=False, extra_headers=None,
             allow_redirects=True):
-        """发起 GET 请求，返回 Response 对象。"""
-        self._wait_interval()
+        """发起 GET 请求（带重试），返回 Response 对象。"""
         headers = self._make_headers(use_wechat_ua, extra_headers)
-        resp = self.session.get(
-            url,
-            params=params,
-            headers=headers,
-            timeout=self.timeout,
-            allow_redirects=allow_redirects,
-        )
-        return resp
+        last_exc = None
+        for attempt in range(self.retry):
+            try:
+                self._wait_interval()
+                resp = self.session.get(
+                    url, params=params, headers=headers,
+                    timeout=self.timeout, allow_redirects=allow_redirects,
+                )
+                # 5xx 重试
+                if resp.status_code >= 500 and attempt < self.retry - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+                return resp
+            except (requests.Timeout, requests.ConnectionError) as e:
+                last_exc = e
+                if attempt < self.retry - 1:
+                    time.sleep(2 ** attempt)
+        raise last_exc if last_exc else requests.RequestException("重试耗尽")
 
     def get_text(self, url, params=None, use_wechat_ua=False, extra_headers=None,
                  encoding=None):

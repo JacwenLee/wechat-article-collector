@@ -1,31 +1,12 @@
 """
 阅读窗口 —— 弹出窗口阅读已收藏文章全文。
-支持纯文本阅读 + 打开原文链接 + 标记已读。
+支持纯文本阅读 + 打开原文链接 + 标记已读 + 封面图 + 阅读进度。
 """
-
-import os
-import subprocess
-import threading
-import webbrowser
 
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
 
-
-def open_url(url):
-    """可靠地在默认浏览器中打开 URL。"""
-    try:
-        if os.name == "nt":
-            os.startfile(url)
-            return True
-        else:
-            webbrowser.open(url)
-            return True
-    except Exception:
-        try:
-            return webbrowser.open(url)
-        except Exception:
-            return False
+from utils.helpers import open_url
 
 
 class ReaderWindow:
@@ -123,8 +104,29 @@ class ReaderWindow:
             self.win, font=("微软雅黑", 11), wrap=WORD,
             bootstyle=LIGHT, padx=15, pady=10,
         )
-        self.text.pack(fill=BOTH, expand=True, padx=10, pady=(0, 10))
+        self.text.pack(fill=BOTH, expand=True, padx=10, pady=(0, 2))
         self.text.configure(state=DISABLED)
+
+        # 阅读进度条
+        self.progress_var = ttk.StringVar(value="0%")
+        prog_frame = ttk.Frame(self.win)
+        prog_frame.pack(fill=X, padx=10, pady=(0, 10))
+        self.read_progress = ttk.Progressbar(prog_frame, mode=DETERMINATE,
+                                             bootstyle=INFO, length=200)
+        self.read_progress.pack(side=LEFT, padx=5)
+        ttk.Label(prog_frame, textvariable=self.progress_var,
+                  bootstyle=SECONDARY, width=5).pack(side=LEFT)
+
+    def _update_read_progress(self, event=None):
+        """更新阅读进度。"""
+        try:
+            yview = self.text.yview()
+            if yview[1] > 0:
+                pct = int(yview[1] * 100)
+                self.read_progress['value'] = pct
+                self.progress_var.set(f"{pct}%")
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     def _show_article(self):

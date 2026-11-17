@@ -3,10 +3,7 @@
 支持两种模式：搜索模式（搜狗结果）和收藏库模式（本地文章）。
 """
 
-import os
-import subprocess
 import threading
-import webbrowser
 
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
@@ -15,22 +12,8 @@ from ttkbootstrap.dialogs import Messagebox
 from core.searcher import Searcher
 from core.fetcher import Fetcher
 from gui.reader_window import ReaderWindow
-
-
-def open_url(url):
-    """可靠地在默认浏览器中打开 URL（Windows 优先用 os.startfile）。"""
-    try:
-        if os.name == "nt":
-            os.startfile(url)
-            return True
-        else:
-            webbrowser.open(url)
-            return True
-    except Exception:
-        try:
-            return webbrowser.open(url)
-        except Exception:
-            return False
+from utils.helpers import open_url
+from utils.config import Config
 
 
 class SearchPanel(ttk.Frame):
@@ -39,21 +22,25 @@ class SearchPanel(ttk.Frame):
     MODE_SEARCH = "search"
     MODE_COLLECTION = "collection"
 
-    def __init__(self, parent, db, on_status=None, on_refresh=None, **kwargs):
+    def __init__(self, parent, db, on_status=None, on_refresh=None,
+                 config=None, **kwargs):
         super().__init__(parent, **kwargs)
         self.db = db
         self.on_status = on_status or (lambda t: None)
         self.on_refresh = on_refresh or (lambda: None)
+        self.config = config or Config()
         self.searcher = Searcher()
         self.fetcher = Fetcher(self.searcher.http)
+        self._searching = False
 
         self.mode = self.MODE_COLLECTION
+        self.search_scope = "online"
         self.current_keyword = ""
         self.current_page = 1
         self.search_response = None
-        self._search_results = []      # list[SearchResult]
-        self._collection_items = []    # list[dict]
-        self._item_map = {}            # tree iid -> data index
+        self._search_results = []
+        self._collection_items = []
+        self._item_map = {}
 
         self._build_ui()
         self.show_collection()
@@ -67,11 +54,23 @@ class SearchPanel(ttk.Frame):
         search_frame.pack(fill=X, padx=8, pady=(8, 4))
 
         ttk.Label(search_frame, text="🔍", font=("", 14)).pack(side=LEFT, padx=(8, 4))
+
+        # 本地/在线切换
+        self.scope_var = ttk.StringVar(value="online")
+        scope_box = ttk.Combobox(search_frame, textvariable=self.scope_var,
+                                 values=["online 在线搜索", "local 本地搜索"],
+                                 state="readonly", width=12, bootstyle=SECONDARY)
+        scope_box.pack(side=LEFT, padx=2)
+        scope_box.bind("<<ComboboxSelected>>", self._on_scope_change)
+
+        # 搜索历史 Combobox
         self.keyword_var = ttk.StringVar()
-        entry = ttk.Entry(search_frame, textvariable=self.keyword_var,
-                          font=("微软雅黑", 11), width=40)
-        entry.pack(side=LEFT, padx=4, fill=X, expand=True)
-        entry.bind("<Return>", lambda e: self.do_search())
+        hist = self.config.get_search_history()
+        self.keyword_combo = ttk.Combobox(search_frame, textvariable=self.keyword_var,
+                                          font=("微软雅黑", 11), width=35,
+                                          values=hist)
+        self.keyword_combo.pack(side=LEFT, padx=4, fill=X, expand=True)
+        self.keyword_combo.bind("<Return>", lambda e: self.do_search())
 
         self.search_btn = ttk.Button(search_frame, text="搜索", bootstyle=PRIMARY,
                                      command=self.do_search, width=8)
@@ -163,29 +162,64 @@ class SearchPanel(ttk.Frame):
     # ==================================================================
     #  搜索模式
     # ==================================================================
+    def _on_scope_change(self, event=None):
+        val = self.scope_var.get()
+        self.search_scope = "local" if "local" in val else "online"
+        if self.search_scope == "local":
+            self.prev_btn.config(state=DISABLED)
+            self.next_btn.config(state=DISABLED)
+            self.page_label.config(text="")
+
     def do_search(self):
         keyword = self.keyword_var.get().strip()
         if not keyword:
             self.on_status("请输入搜索关键词")
             return
+        if self._searching:
+            return  # 防抖
         self.current_keyword = keyword
+
+        # 本地搜索
+        if self.search_scope == "local":
+            self.config.add_search_history(keyword)
+            self.keyword_combo['values'] = self.config.get_search_history()
+            results = self.db.fulltext_search(keyword)
+            self.mode = self.MODE_COLLECTION
+            self._collection_items = results
+            self._set_buttons()
+            self._populate_tree_collection(results)
+            self.on_status(f"本地搜索「{keyword}」: {len(results)} 条")
+            return
+
+        # 在线搜索
+        self.config.add_search_history(keyword)
+        self.keyword_combo['values'] = self.config.get_search_history()
         self.current_page = 1
         self._search_page()
 
     def _search_page(self):
         self.mode = self.MODE_SEARCH
+        self._searching = True
+        self.search_btn.config(state=DISABLED)
         self._set_buttons()
         self.on_status(f"正在搜索「{self.current_keyword}」第 {self.current_page} 页...")
         self._start_progress()
 
         def worker():
-            resp = self.searcher.search(self.current_keyword, page=self.current_page)
+            try:
+                resp = self.searcher.search(self.current_keyword, page=self.current_page)
+            except Exception as e:
+                resp = type(resp, (), {"error": str(e), "is_captcha": False,
+                                       "results": [], "total": 0,
+                                       "page": self.current_page, "has_next": False})()
             self.after(0, lambda: self._on_search_done(resp))
 
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_search_done(self, resp):
         self._stop_progress()
+        self._searching = False
+        self.search_btn.config(state=NORMAL)
         if resp.is_captcha:
             Messagebox.show_warning(
                 "搜狗要求验证码",
@@ -207,15 +241,29 @@ class SearchPanel(ttk.Frame):
         self.prev_btn.config(state=NORMAL if resp.page > 1 else DISABLED)
         self.next_btn.config(state=NORMAL if resp.has_next else DISABLED)
 
-        self.on_status(f"搜索完成: {len(resp.results)} 条结果" +
-                       (f" (共{total}条)" if total else ""))
+        if not resp.results:
+            self.on_status("未找到相关文章，试试其他关键词")
+        else:
+            self.on_status(f"搜索完成: {len(resp.results)} 条结果" +
+                           (f" (共{total}条)" if total else ""))
 
     def _populate_tree_search(self, results):
         self.tree.delete(*self.tree.get_children())
         self._item_map.clear()
+        # 获取已收藏的 URL 集合，用于标记
+        collected_urls = set()
+        try:
+            for r in results:
+                if r.link:
+                    aid = self.db.get_article_by_url(r.link)
+                    if aid:
+                        collected_urls.add(r.link)
+        except Exception:
+            pass
         for i, r in enumerate(results):
+            mark = "✅ " if r.link in collected_urls else ""
             iid = self.tree.insert("", END, values=(
-                r.title[:60], r.author, r.pub_date
+                mark + r.title[:58], r.author, r.pub_date
             ), tags=("even" if i % 2 == 0 else "odd",))
             self._item_map[iid] = i
         self.count_label.config(text=f"共 {len(results)} 条")
@@ -344,7 +392,6 @@ class SearchPanel(ttk.Frame):
                     self.on_status(f"正在打开: {a.get('title','')[:30]}...")
                     ok = open_url(url)
                     self.on_status("已在浏览器打开" if ok else "打开失败")
-                    self.on_status("已在浏览器打开")
                     break
             else:
                 self.on_status("该文章无链接")
@@ -394,7 +441,8 @@ class SearchPanel(ttk.Frame):
             self.show_collection()
 
         from gui.dialogs import CollectDialog
-        CollectDialog(self.winfo_toplevel(), self.db, results, on_done=on_done)
+        CollectDialog(self.winfo_toplevel(), self.db, results,
+                      fetcher=self.fetcher, on_done=on_done)
 
     # ---- 阅读 ----
     def _read_selected(self):

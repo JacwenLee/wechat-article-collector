@@ -31,15 +31,17 @@ class CollectDialog:
     收藏对话框 —— 选择标签 + 显示进度 + 逐篇状态。
     """
 
-    def __init__(self, parent, db, results, on_done=None):
+    def __init__(self, parent, db, results, fetcher=None, on_done=None):
         """
         :param parent: 父窗口
         :param db: Database 实例
         :param results: list[SearchResult] 待收藏文章
+        :param fetcher: 共享的 Fetcher 实例（复用 HTTP 会话和限速）
         :param on_done: 完成回调 fn(success, fail, dup)
         """
         self.db = db
         self.results = results
+        self.fetcher = fetcher
         self.on_done = on_done
         self.selected_tags = []
 
@@ -67,18 +69,18 @@ class CollectDialog:
         # 现有标签
         existing_tags = self.db.list_tags()
         self.tag_vars = {}
+        self.tag_inner = ttk.Frame(tag_frame)
+        self.tag_inner.pack(fill=X)
         if existing_tags:
-            tag_inner = ttk.Frame(tag_frame)
-            tag_inner.pack(fill=X)
             for i, t in enumerate(existing_tags):
                 var = ttk.BooleanVar(value=False)
                 self.tag_vars[t["name"]] = var
-                cb = ttk.Checkbutton(tag_inner, text=f"{t['name']} ({t['cnt']})",
+                cb = ttk.Checkbutton(self.tag_inner, text=f"{t['name']} ({t['cnt']})",
                                      variable=var, bootstyle=PRIMARY)
                 cb.grid(row=i // 4, column=i % 4, sticky=W, padx=3, pady=2)
         else:
-            ttk.Label(tag_inner if existing_tags else tag_frame,
-                      text="暂无标签", bootstyle=SECONDARY).pack(anchor=W)
+            ttk.Label(self.tag_inner,
+                      text="暂无标签，可在下方新建", bootstyle=SECONDARY).pack(anchor=W)
 
         # 新标签输入
         new_tag_frame = ttk.Frame(tag_frame)
@@ -153,11 +155,22 @@ class CollectDialog:
         if name not in self.tag_vars:
             var = ttk.BooleanVar(value=True)
             self.tag_vars[name] = var
-            self.selected_tags.append(name)
         else:
             self.tag_vars[name].set(True)
         self.new_tag_var.set("")
+        self._rebuild_tag_checkboxes()
         self._update_new_tags_display()
+
+    def _rebuild_tag_checkboxes(self):
+        """重建标签勾选区，显示所有标签（含新增）。"""
+        for child in self.tag_inner.winfo_children():
+            child.destroy()
+        all_names = list(self.tag_vars.keys())
+        for i, name in enumerate(all_names):
+            cb = ttk.Checkbutton(self.tag_inner, text=name,
+                                 variable=self.tag_vars[name],
+                                 bootstyle=PRIMARY)
+            cb.grid(row=i // 4, column=i % 4, sticky=W, padx=3, pady=2)
 
     def _update_new_tags_display(self):
         tags = [n for n, v in self.tag_vars.items() if v.get()]
@@ -168,10 +181,8 @@ class CollectDialog:
 
     # ------------------------------------------------------------------
     def _start_collect(self):
-        # 收集选中的标签
         self.selected_tags = [n for n, v in self.tag_vars.items() if v.get()]
         self.collect_btn.config(state=DISABLED)
-        self.progress_bar.start()
 
         def worker():
             success, fail, dup = 0, 0, 0
@@ -183,12 +194,10 @@ class CollectDialog:
                 content_html = ""
                 real_url = r.link
                 try:
-                    from core.fetcher import Fetcher
-                    fetcher = Fetcher()
-                    art = fetcher.fetch(r.link)
-                    if art.real_url:
+                    art = self.fetcher.fetch(r.link) if self.fetcher else None
+                    if art and art.real_url:
                         real_url = art.real_url
-                    if art.success:
+                    if art and art.success:
                         content_text = art.content_text
                         content_html = art.content_html
                 except Exception:
@@ -234,7 +243,6 @@ class CollectDialog:
 
     # ------------------------------------------------------------------
     def _on_done(self, success, fail, dup):
-        self.progress_bar.stop()
         self.collect_btn.config(state=NORMAL)
         parts = []
         if success:
@@ -353,6 +361,7 @@ class TagEditDialog:
         self.db.set_article_tags(self.article_id, tags)
         if self.on_done:
             self.on_done()
+        self.win.grab_release()
         self.win.destroy()
 
 

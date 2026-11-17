@@ -3,6 +3,7 @@
 """
 
 import os
+import shutil
 
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
@@ -10,6 +11,7 @@ from ttkbootstrap.dialogs import Messagebox
 
 from core.database import Database
 from gui.search_panel import SearchPanel
+from utils.config import Config
 
 
 class MainWindow:
@@ -18,15 +20,20 @@ class MainWindow:
     def __init__(self, db_path="articles.db"):
         self.db = Database(db_path)
         self.db_path = db_path
+        self.config = Config()
 
-        self.root = ttk.Window(title="微信文章收藏器", themename="litera",
-                               size=(1100, 700), minsize=(800, 500))
+        theme = self.config.get("theme", "litera")
+        geo = self.config.get("window_geometry", "1100x700")
+        self.root = ttk.Window(title="微信文章收藏器", themename=theme,
+                               size=tuple(int(x) for x in geo.split("x")),
+                               minsize=(800, 500))
         self.root.place_window_center()
 
         self._build_menu()
         self._build_layout()
         self._refresh_sidebar()
         self._update_status("就绪")
+        self._bind_shortcuts()
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -40,6 +47,7 @@ class MainWindow:
         file_menu.add_command(label="导出全部 (Markdown)", command=self._export_all_md)
         file_menu.add_command(label="导出全部 (HTML)", command=self._export_all_html)
         file_menu.add_separator()
+        file_menu.add_command(label="备份数据库", command=self._backup_db)
         file_menu.add_command(label="退出", command=self._on_close)
         menubar.add_cascade(label="文件", menu=file_menu)
 
@@ -48,7 +56,15 @@ class MainWindow:
         tag_menu.add_command(label="管理标签", command=self._manage_tags)
         menubar.add_cascade(label="标签", menu=tag_menu)
 
+        view_menu = ttk.Menu(menubar, tearoff=False)
+        view_menu.add_command(label="浅色主题 (litera)", command=lambda: self._switch_theme("litera"))
+        view_menu.add_command(label="暗色主题 (darkly)", command=lambda: self._switch_theme("darkly"))
+        view_menu.add_command(label="蓝色主题 (cosmo)", command=lambda: self._switch_theme("cosmo"))
+        view_menu.add_command(label="绿色主题 (superhero)", command=lambda: self._switch_theme("superhero"))
+        menubar.add_cascade(label="视图", menu=view_menu)
+
         help_menu = ttk.Menu(menubar, tearoff=False)
+        help_menu.add_command(label="设置", command=self._show_settings)
         help_menu.add_command(label="关于", command=self._show_about)
         menubar.add_cascade(label="帮助", menu=help_menu)
 
@@ -99,6 +115,7 @@ class MainWindow:
             main_paned, self.db,
             on_status=self._update_status,
             on_refresh=self._refresh_sidebar,
+            config=self.config,
         )
         main_paned.add(self.search_panel, weight=1)
 
@@ -204,10 +221,7 @@ class MainWindow:
             if new_name and new_name.strip():
                 new_name = new_name.strip()
                 try:
-                    self.db._conn.execute(
-                        "UPDATE tags SET name=? WHERE id=?", (new_name, tid)
-                    )
-                    self.db._conn.commit()
+                    self.db.rename_tag(tid, new_name)
                     refresh_list()
                     self._refresh_sidebar()
                 except Exception:
@@ -310,7 +324,89 @@ class MainWindow:
                             f"(未读{stats['unread']}/已读{stats['read']}) "
                             f"|  标签: {stats['tags']}个")
 
+    def _bind_shortcuts(self):
+        """绑定全局快捷键。"""
+        self.root.bind("<Control-f>", lambda e: self.search_panel.keyword_combo.focus_set())
+        self.root.bind("<Control-F>", lambda e: self.search_panel.keyword_combo.focus_set())
+        self.root.bind("<Control-a>", lambda e: self.search_panel._toggle_select_all())
+        self.root.bind("<Control-A>", lambda e: self.search_panel._toggle_select_all())
+        self.root.bind("<F5>", lambda e: self.search_panel.show_collection())
+
+    def _switch_theme(self, theme):
+        """切换主题。"""
+        self.root.style.theme_use(theme)
+        self.config.set("theme", theme)
+        self._update_status(f"已切换主题: {theme}")
+
+    def _show_settings(self):
+        """设置对话框。"""
+        win = ttk.Toplevel(self.root)
+        win.title("设置")
+        win.geometry("400x350")
+        win.transient(self.root)
+
+        ttk.Label(win, text="⚙ 设置", font=("微软雅黑", 14, "bold")).pack(pady=15)
+
+        frame = ttk.Frame(win, padding=15)
+        frame.pack(fill=BOTH, expand=True)
+
+        # 请求间隔
+        ttk.Label(frame, text="请求最小间隔(秒):").grid(row=0, column=0, sticky=W, pady=5)
+        min_var = ttk.StringVar(value=str(self.config.get("request_min_interval")))
+        ttk.Entry(frame, textvariable=min_var, width=10).grid(row=0, column=1, padx=5)
+
+        ttk.Label(frame, text="请求最大间隔(秒):").grid(row=1, column=0, sticky=W, pady=5)
+        max_var = ttk.StringVar(value=str(self.config.get("request_max_interval")))
+        ttk.Entry(frame, textvariable=max_var, width=10).grid(row=1, column=1, padx=5)
+
+        ttk.Label(frame, text="请求超时(秒):").grid(row=2, column=0, sticky=W, pady=5)
+        timeout_var = ttk.StringVar(value=str(self.config.get("timeout")))
+        ttk.Entry(frame, textvariable=timeout_var, width=10).grid(row=2, column=1, padx=5)
+
+        ttk.Label(frame, text="代理地址:").grid(row=3, column=0, sticky=W, pady=5)
+        proxy_var = ttk.StringVar(value=str(self.config.get("proxy", "")))
+        ttk.Entry(frame, textvariable=proxy_var, width=20).grid(row=3, column=1, padx=5)
+
+        def save():
+            try:
+                self.config.set("request_min_interval", float(min_var.get()))
+                self.config.set("request_max_interval", float(max_var.get()))
+                self.config.set("timeout", float(timeout_var.get()))
+                self.config.set("proxy", proxy_var.get().strip())
+                Messagebox.show_info("设置", "设置已保存，重启后生效", parent=win)
+                win.destroy()
+            except Exception:
+                Messagebox.show_error("错误", "请输入有效数值", parent=win)
+
+        ttk.Button(win, text="保存", bootstyle=SUCCESS, command=save).pack(pady=10)
+        from utils.helpers import center_on_parent
+        center_on_parent(win, self.root)
+        win.grab_set()
+
+    def _backup_db(self):
+        """备份数据库。"""
+        from tkinter import filedialog
+        filepath = filedialog.asksaveasfilename(
+            parent=self.root, title="备份数据库",
+            defaultextension=".db", filetypes=[("SQLite", "*.db")],
+            initialfile="articles_backup.db",
+        )
+        if filepath:
+            try:
+                self.db._conn.commit()
+                shutil.copy2(self.db_path, filepath)
+                Messagebox.show_info("备份成功", f"已备份到 {filepath}", parent=self.root)
+            except Exception as e:
+                Messagebox.show_error("备份失败", str(e), parent=self.root)
+
+    def _save_window_state(self):
+        """保存窗口状态。"""
+        geo = f"{self.root.winfo_width()}x{self.root.winfo_height()}"
+        self.config.set("window_geometry", geo)
+
     def _on_close(self):
+        self._save_window_state()
+        self.config.save()
         self.db.close()
         self.root.destroy()
 

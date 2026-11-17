@@ -5,6 +5,7 @@ SQLite 数据层 —— 文章收藏、标签管理、全文搜索(FTS5)。
 
 import os
 import sqlite3
+import threading
 from datetime import datetime
 
 SCHEMA_SQL = """
@@ -73,7 +74,8 @@ class Database:
 
     def __init__(self, db_path="articles.db"):
         self.db_path = db_path
-        self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        self._lock = threading.RLock()
+        self._conn = sqlite3.connect(db_path, check_same_thread=False, timeout=10)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
@@ -101,31 +103,41 @@ class Database:
                     pub_date="", note=""):
         """插入一篇文章，返回新 id。若 url 已存在则更新并返回已有 id。"""
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        # 去重：相同 url 视为同一篇
-        if url:
+        with self._lock:
+            # 原子操作：查重 + 插入/更新
+            if url:
+                row = self._conn.execute(
+                    "SELECT id FROM articles WHERE url = ?", (url,)
+                ).fetchone()
+                if row:
+                    self._conn.execute(
+                        """UPDATE articles SET title=?, author=?, account_id=?,
+                           summary=?, content=?, content_text=?, cover_img=?,
+                           pub_date=?, note=?
+                           WHERE id=?""",
+                        (title, author, account_id, summary, content,
+                         content_text, cover_img, pub_date, note, row["id"]),
+                    )
+                    self._conn.commit()
+                    return row["id"]
+            cur = self._conn.execute(
+                """INSERT INTO articles
+                   (title, author, account_id, summary, content, content_text,
+                    url, cover_img, pub_date, collected_at, note)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (title, author, account_id, summary, content, content_text,
+                 url, cover_img, pub_date, now, note),
+            )
+            self._conn.commit()
+            return cur.lastrowid
+
+    def get_article_by_url(self, url):
+        """按 URL 查询文章是否存在，返回 id 或 None。"""
+        with self._lock:
             row = self._conn.execute(
-                "SELECT id FROM articles WHERE url = ?", (url,)
+                "SELECT id FROM articles WHERE url=?", (url,)
             ).fetchone()
-            if row:
-                self._conn.execute(
-                    """UPDATE articles SET title=?, author=?, summary=?,
-                       content=?, content_text=?, cover_img=?, pub_date=?, note=?
-                       WHERE id=?""",
-                    (title, author, summary, content, content_text,
-                     cover_img, pub_date, note, row["id"]),
-                )
-                self._conn.commit()
-                return row["id"]
-        cur = self._conn.execute(
-            """INSERT INTO articles
-               (title, author, account_id, summary, content, content_text,
-                url, cover_img, pub_date, collected_at, note)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-            (title, author, account_id, summary, content, content_text,
-             url, cover_img, pub_date, now, note),
-        )
-        self._conn.commit()
-        return cur.lastrowid
+            return row["id"] if row else None
 
     def get_article(self, article_id):
         """获取单篇文章（含标签名列表）。"""
@@ -157,9 +169,10 @@ class Database:
 
     def delete_article(self, article_id):
         """删除文章（显式清理标签关联 + FTS 索引）。"""
-        self._conn.execute("DELETE FROM article_tags WHERE article_id=?", (article_id,))
-        self._conn.execute("DELETE FROM articles WHERE id=?", (article_id,))
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute("DELETE FROM article_tags WHERE article_id=?", (article_id,))
+            self._conn.execute("DELETE FROM articles WHERE id=?", (article_id,))
+            self._conn.commit()
 
     def list_articles(self, tag_id=None, search="", read_filter=None,
                       sort_by="collected_at", sort_desc=True, limit=500):
@@ -179,8 +192,11 @@ class Database:
             wheres.append("at.tag_id = ?")
             params.append(tag_id)
         if search:
-            wheres.append("(a.title LIKE ? OR a.author LIKE ? OR a.summary LIKE ?)")
-            kw = f"%{search}%"
+            esc = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            kw = f"%{esc}%"
+            wheres.append(
+                "(a.title LIKE ? ESCAPE '\\' OR a.author LIKE ? ESCAPE '\\' "
+                "OR a.summary LIKE ? ESCAPE '\\')")
             params.extend([kw, kw, kw])
         if read_filter is not None:
             wheres.append("a.is_read = ?")
@@ -250,18 +266,30 @@ class Database:
         return [dict(r) for r in rows]
 
     def set_article_tags(self, article_id, tag_names):
-        """替换文章的所有标签。"""
-        self._conn.execute(
-            "DELETE FROM article_tags WHERE article_id=?", (article_id,)
-        )
-        for name in tag_names:
-            tid = self.add_tag(name)
-            if tid:
+        """替换文章的所有标签（原子操作）。"""
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
                 self._conn.execute(
-                    "INSERT OR IGNORE INTO article_tags(article_id, tag_id) VALUES(?,?)",
-                    (article_id, tid),
+                    "DELETE FROM article_tags WHERE article_id=?", (article_id,)
                 )
-        self._conn.commit()
+                for name in tag_names:
+                    tid = self.add_tag(name)
+                    if tid:
+                        self._conn.execute(
+                            "INSERT OR IGNORE INTO article_tags(article_id, tag_id) VALUES(?,?)",
+                            (article_id, tid),
+                        )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def rename_tag(self, tag_id, new_name):
+        """重命名标签。"""
+        with self._lock:
+            self._conn.execute("UPDATE tags SET name=? WHERE id=?", (new_name, tag_id))
+            self._conn.commit()
 
     def get_article_tags(self, article_id):
         """返回文章的标签名列表。"""
@@ -277,13 +305,16 @@ class Database:
     #  统计
     # ==================================================================
     def stats(self):
+        row = self._conn.execute(
+            """SELECT COUNT(*) AS total,
+                      SUM(is_read=0) AS unread,
+                      SUM(is_read=1) AS read_cnt,
+                      (SELECT COUNT(*) FROM tags) AS tags
+               FROM articles"""
+        ).fetchone()
         return {
-            "total": self.count_articles(),
-            "unread": self._conn.execute(
-                "SELECT COUNT(*) FROM articles WHERE is_read=0"
-            ).fetchone()[0],
-            "read": self._conn.execute(
-                "SELECT COUNT(*) FROM articles WHERE is_read=1"
-            ).fetchone()[0],
-            "tags": self._conn.execute("SELECT COUNT(*) FROM tags").fetchone()[0],
+            "total": row["total"] or 0,
+            "unread": row["unread"] or 0,
+            "read": row["read_cnt"] or 0,
+            "tags": row["tags"] or 0,
         }

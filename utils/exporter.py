@@ -6,6 +6,8 @@ import os
 import re
 from datetime import datetime
 
+from utils.helpers import sanitize_html
+
 
 class Exporter:
     """文章导出器。"""
@@ -76,7 +78,7 @@ class Exporter:
             pub_date = _esc(art.get("pub_date", ""))
             url = art.get("url", "")
             summary = _esc(art.get("summary", ""))
-            content_html = art.get("content", "")  # 原始 HTML
+            content_html = sanitize_html(art.get("content", ""))  # 清洗后的 HTML
             content_text = _esc(art.get("content_text", ""))
             tags = art.get("tags", [])
             note = _esc(art.get("note", ""))

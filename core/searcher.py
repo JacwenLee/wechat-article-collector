@@ -92,11 +92,6 @@ class Searcher:
         resp = SearchResponse(page=page)
 
         # 总结果数
-        total_text = ""
-        for el in soup.select("div.news-box2, .p-fy, .results-num"):
-            total_text = el.get_text(strip=True)
-            break
-        # 备选: "找到约5,989条结果"
         m = re.search(r"找到约\s*([\d,]+)\s*条", html)
         if m:
             resp.total = int(m.group(1).replace(",", ""))
