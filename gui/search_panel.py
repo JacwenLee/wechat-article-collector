@@ -14,6 +14,7 @@ from core.fetcher import Fetcher
 from gui.reader_window import ReaderWindow
 from utils.helpers import open_url
 from utils.config import Config
+from gui.web_viewer import open_in_app, open_html_in_app
 
 
 class SearchPanel(ttk.Frame):
@@ -315,15 +316,13 @@ class SearchPanel(ttk.Frame):
     def _on_double_click(self, event):
         """双击事件处理。"""
         if self.mode == self.MODE_SEARCH:
-            # 搜索模式: 在浏览器打开
+            # 搜索模式: 解析真实链接后应用内打开
             iid = self.tree.identify_row(event.y) or self.tree.focus()
             if iid and iid in self._item_map:
                 idx = self._item_map[iid]
                 r = self._search_results[idx]
                 if r.link:
-                    self.on_status(f"正在打开: {r.title[:30]}...")
-                    ok = open_url(r.link)
-                    self.on_status("已在浏览器打开" if ok else "打开失败")
+                    self._open_in_app_resolved(r.link, r.title[:30])
                 else:
                     self.on_status("该文章无链接")
             else:
@@ -379,10 +378,8 @@ class SearchPanel(ttk.Frame):
             for idx in indices:
                 r = self._search_results[idx]
                 if r.link:
-                    self.on_status(f"正在打开: {r.title[:30]}...")
-                    ok = open_url(r.link)
-                    self.on_status("已在浏览器打开" if ok else "打开失败")
-                    break  # 只打开第一个
+                    self._open_in_app_resolved(r.link, r.title[:30])
+                    break
             else:
                 self.on_status("该文章无链接")
         else:
@@ -390,12 +387,48 @@ class SearchPanel(ttk.Frame):
                 a = self._collection_items[idx]
                 url = a.get("url", "")
                 if url:
-                    self.on_status(f"正在打开: {a.get('title','')[:30]}...")
-                    ok = open_url(url)
-                    self.on_status("已在浏览器打开" if ok else "打开失败")
+                    title = a.get("title", "文章阅读")[:30]
+                    content_html = a.get("content", "")
+                    self.on_status(f"正在打开: {title}...")
+                    if content_html:
+                        full_html = "<html><head><meta charset='utf-8'></head><body style='max-width:677px;margin:0 auto;padding:20px;font-family:sans-serif'>" + content_html + "</body></html>"
+                        ok = open_in_app(url, title, parent=self.winfo_toplevel(), html_content=full_html)
+                    else:
+                        ok = open_in_app(url, title, parent=self.winfo_toplevel())
+                    self.on_status("已在应用内打开" if ok else "打开失败")
                     break
             else:
                 self.on_status("该文章无链接")
+
+    def _open_in_app_resolved(self, sogou_link, title):
+        """解析搜狗链接获取微信真实链接和内容，然后应用内打开。"""
+        self.on_status(f"正在解析链接: {title}...")
+
+        def worker():
+            try:
+                art = self.fetcher.fetch(sogou_link)
+                if art.success and art.content_html:
+                    # 有全文 HTML，本地渲染
+                    full_html = "<html><head><meta charset='utf-8'></head><body style='max-width:677px;margin:0 auto;padding:20px;font-family:sans-serif'>" + art.content_html + "</body></html>"
+                    self.after(0, lambda: self._do_open_html(full_html, title))
+                else:
+                    # 无全文，用真实链接打开
+                    real_url = art.real_url or sogou_link
+                    self.after(0, lambda: self._do_open_in_app(real_url, title))
+            except Exception:
+                self.after(0, lambda: self._do_open_in_app(sogou_link, title))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _do_open_in_app(self, url, title):
+        """在应用内打开 URL。"""
+        ok = open_in_app(url, title, parent=self.winfo_toplevel())
+        self.on_status("已在应用内打开" if ok else "打开失败")
+
+    def _do_open_html(self, html, title):
+        """在应用内渲染 HTML。"""
+        ok = open_in_app("", title, parent=self.winfo_toplevel(), html_content=html)
+        self.on_status("已在应用内打开" if ok else "打开失败")
 
     def _toggle_select_all(self):
         items = self.tree.get_children()

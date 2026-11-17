@@ -1,7 +1,9 @@
 {
   "theme": "cosmo",
-  "window_geometry": "1100x610",
+  "window_geometry": "1100x580",
   "search_history": [
+    "ai",
+    "智慧养殖",
     "agent"
   ],
   "request_min_interval": 2.0,

@@ -7,6 +7,7 @@ import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
 
 from utils.helpers import open_url
+from gui.web_viewer import open_in_app, open_html_in_app
 
 
 class ReaderWindow:
@@ -61,7 +62,7 @@ class ReaderWindow:
         toolbar = ttk.Frame(self.win, bootstyle=SECONDARY)
         toolbar.pack(fill=X, padx=10, pady=(10, 5))
 
-        ttk.Button(toolbar, text="🔗 打开原文", bootstyle=INFO,
+        ttk.Button(toolbar, text="🔗 应用内打开", bootstyle=INFO,
                    command=self._open_original).pack(side=LEFT, padx=(0, 5))
         ttk.Button(toolbar, text="复制全文", bootstyle=(PRIMARY, OUTLINE),
                    command=self._copy_content).pack(side=LEFT, padx=5)
@@ -149,7 +150,7 @@ class ReaderWindow:
             self.text.insert(END, "─" * 40 + "\n\n", "sep")
             self.text.insert(END, "⚠ 未获取到文章全文（微信反爬限制）。\n", "warn")
             if url:
-                self.text.insert(END, "请点击上方「打开原文」按钮，在浏览器中阅读完整文章。\n", "tip")
+                self.text.insert(END, "请点击上方「🔗 应用内打开」按钮，在应用内阅读完整文章。\n", "tip")
             self.text.tag_configure("header", font=("微软雅黑", 13, "bold"),
                                     foreground="#1a73e8")
             self.text.tag_configure("body", font=("微软雅黑", 11))
@@ -163,11 +164,14 @@ class ReaderWindow:
     # ------------------------------------------------------------------
     def _open_original(self):
         url = self.article.get("url", "")
-        if url:
-            ok = open_url(url)
-            self.on_status("已打开原文链接" if ok else "打开失败")
+        title = self.article.get("title", "文章阅读")[:30]
+        content_html = self.article.get("content", "")
+        if content_html:
+            full_html = "<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'></head><body style='max-width:677px;margin:0 auto;padding:20px;font-family:sans-serif'>" + content_html + "</body></html>"
+            ok = open_in_app(url, title, parent=self.win, html_content=full_html)
         else:
-            self.on_status("无原文链接")
+            ok = open_in_app(url, title, parent=self.win)
+        self.on_status("已在应用内打开" if ok else "打开失败")
 
     def _copy_content(self):
         content = self.article.get("content_text", "") or self.article.get("summary", "")
