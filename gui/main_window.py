@@ -44,6 +44,8 @@ class MainWindow:
         menubar = ttk.Menu(self.root)
 
         file_menu = ttk.Menu(menubar, tearoff=False)
+        file_menu.add_command(label="输入链接收藏...", command=self._collect_by_url)
+        file_menu.add_separator()
         file_menu.add_command(label="导出全部 (Markdown)", command=self._export_all_md)
         file_menu.add_command(label="导出全部 (HTML)", command=self._export_all_html)
         file_menu.add_separator()
@@ -263,6 +265,21 @@ class MainWindow:
             pass
 
         win.grab_set()
+
+    # ==================================================================
+    #  输入链接收藏
+    # ==================================================================
+    def _collect_by_url(self):
+        from gui.dialogs import UrlCollectDialog
+
+        def on_done():
+            self._refresh_sidebar()
+            self._update_status("链接收藏完成")
+            self.search_panel.show_collection()
+
+        UrlCollectDialog(self.root, self.db,
+                         fetcher=self.search_panel.fetcher,
+                         on_done=on_done)
 
     # ==================================================================
     #  导出

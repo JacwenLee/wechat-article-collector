@@ -443,3 +443,192 @@ class NewTagDialog:
             if self.on_done:
                 self.on_done(self.created)
         self.win.destroy()
+
+
+class UrlCollectDialog:
+    """
+    输入链接收藏对话框 —— 粘贴微信文章链接，直接收藏。
+    """
+
+    def __init__(self, parent, db, fetcher=None, on_done=None):
+        self.db = db
+        self.fetcher = fetcher
+        self.on_done = on_done
+        self.selected_tags = []
+
+        self.win = ttk.Toplevel(parent)
+        self.win.title("输入链接收藏")
+        self.win.geometry("500x520")
+        self.win.transient(parent)
+
+        ttk.Label(self.win, text="📋 输入链接收藏",
+                  font=("微软雅黑", 14, "bold")).pack(pady=(15, 5))
+        ttk.Label(self.win, text="粘贴微信文章链接或搜狗链接，自动抓取并收藏",
+                  bootstyle=SECONDARY).pack(pady=(0, 10))
+
+        # URL 输入区
+        url_frame = ttk.Labelframe(self.win, text="文章链接", padding=10)
+        url_frame.pack(fill=X, padx=15, pady=5)
+        self.url_var = ttk.StringVar()
+        url_entry = ttk.Entry(url_frame, textvariable=self.url_var,
+                              font=("微软雅黑", 10), width=55)
+        url_entry.pack(fill=X, side=LEFT, expand=True, padx=(0, 5))
+        url_entry.bind("<Return>", lambda e: self._start())
+
+        ttk.Button(url_frame, text="粘贴", bootstyle=(SECONDARY, OUTLINE),
+                   command=self._paste_url).pack(side=LEFT)
+
+        # 标题输入区（手动填写，抓取成功则自动覆盖）
+        title_frame = ttk.Labelframe(self.win, text="文章标题（可选，抓取失败时手动填写）", padding=10)
+        title_frame.pack(fill=X, padx=15, pady=5)
+        self.title_var = ttk.StringVar()
+        ttk.Entry(title_frame, textvariable=self.title_var,
+                  font=("微软雅黑", 10), width=55).pack(fill=X)
+
+        # 标签选择区
+        tag_frame = ttk.Labelframe(self.win, text="选择标签（可选）", padding=10)
+        tag_frame.pack(fill=X, padx=15, pady=5)
+
+        existing_tags = self.db.list_tags()
+        self.tag_vars = {}
+        self.tag_inner = ttk.Frame(tag_frame)
+        self.tag_inner.pack(fill=X)
+        if existing_tags:
+            for i, t in enumerate(existing_tags):
+                var = ttk.BooleanVar(value=False)
+                self.tag_vars[t["name"]] = var
+                cb = ttk.Checkbutton(self.tag_inner, text=f"{t['name']} ({t['cnt']})",
+                                     variable=var, bootstyle=PRIMARY)
+                cb.grid(row=i // 4, column=i % 4, sticky=W, padx=3, pady=2)
+        else:
+            ttk.Label(self.tag_inner, text="暂无标签",
+                      bootstyle=SECONDARY).pack(anchor=W)
+
+        # 新标签输入
+        new_tag_frame = ttk.Frame(tag_frame)
+        new_tag_frame.pack(fill=X, pady=(8, 0))
+        ttk.Label(new_tag_frame, text="新建标签:").pack(side=LEFT)
+        self.new_tag_var = ttk.StringVar()
+        ttk.Entry(new_tag_frame, textvariable=self.new_tag_var, width=18).pack(side=LEFT, padx=5)
+        ttk.Button(new_tag_frame, text="添加", bootstyle=(SECONDARY, OUTLINE),
+                   command=self._add_new_tag).pack(side=LEFT)
+
+        # 状态区
+        self.status_var = ttk.StringVar(value="")
+        self.status_label = ttk.Label(self.win, textvariable=self.status_var,
+                                      bootstyle=SECONDARY, wraplength=440)
+        self.status_label.pack(fill=X, padx=15, pady=5)
+
+        self.progress_bar = ttk.Progressbar(self.win, mode=INDETERMINATE,
+                                            length=300, bootstyle=SUCCESS)
+
+        # 按钮
+        btn_frame = ttk.Frame(self.win)
+        btn_frame.pack(side=BOTTOM, fill=X, padx=15, pady=15)
+        self.collect_btn = ttk.Button(btn_frame, text="✅ 收藏",
+                                      bootstyle=SUCCESS, command=self._start)
+        self.collect_btn.pack(side=LEFT, padx=5)
+        ttk.Button(btn_frame, text="关闭", bootstyle=SECONDARY,
+                   command=self._close).pack(side=LEFT, padx=5)
+
+        center_on_parent(self.win, parent)
+        url_entry.focus_set()
+        self.win.grab_set()
+        self.win.wait_window()
+
+    # ------------------------------------------------------------------
+    def _paste_url(self):
+        try:
+            clipped = self.win.clipboard_get()
+            self.url_var.set(clipped.strip())
+        except Exception:
+            self.status_var.set("剪贴板为空")
+
+    def _add_new_tag(self):
+        name = self.new_tag_var.get().strip()
+        if not name:
+            return
+        if name not in self.tag_vars:
+            self.tag_vars[name] = ttk.BooleanVar(value=True)
+        else:
+            self.tag_vars[name].set(True)
+        self.new_tag_var.set("")
+        for child in self.tag_inner.winfo_children():
+            child.destroy()
+        for i, (n, v) in enumerate(self.tag_vars.items()):
+            cb = ttk.Checkbutton(self.tag_inner, text=n, variable=v, bootstyle=PRIMARY)
+            cb.grid(row=i // 4, column=i % 4, sticky=W, padx=3, pady=2)
+
+    # ------------------------------------------------------------------
+    def _start(self):
+        url = self.url_var.get().strip()
+        if not url:
+            self.status_var.set("请输入文章链接")
+            return
+        if not url.startswith("http"):
+            self.status_var.set("链接格式不正确，需以 http 开头")
+            return
+
+        self.selected_tags = [n for n, v in self.tag_vars.items() if v.get()]
+        self.collect_btn.config(state=DISABLED)
+        self.status_var.set("正在抓取文章...")
+        self.progress_bar.pack(pady=5)
+        self.progress_bar.start()
+
+        def worker():
+            try:
+                from core.fetcher import Fetcher
+                fetcher = self.fetcher or Fetcher()
+                art = fetcher.fetch_by_url(url)
+
+                if not art.success and not art.real_url:
+                    self.win.after(0, lambda: self._on_fail(
+                        art.error or "抓取失败，请检查链接是否正确"))
+                    return
+
+                # 用抓取到的信息收藏，标题优先用抓取的，其次用手动输入的
+                manual_title = self.title_var.get().strip()
+                title = art.title or manual_title or "未知标题"
+                author = art.author or ""
+                summary = ""
+                content_html = art.content_html or ""
+                content_text = art.content_text or ""
+                real_url = art.real_url or url
+                pub_date = art.pub_date or ""
+                cover = art.cover_img or ""
+
+                aid = self.db.add_article(
+                    title=title, author=author, summary=summary,
+                    content=content_html, content_text=content_text,
+                    url=real_url, cover_img=cover, pub_date=pub_date,
+                )
+                if self.selected_tags:
+                    self.db.set_article_tags(aid, self.selected_tags)
+
+                has_text = bool(content_text)
+                self.win.after(0, lambda: self._on_success(title, has_text))
+            except Exception as e:
+                self.win.after(0, lambda: self._on_fail(str(e)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_success(self, title, has_text):
+        self.progress_bar.stop()
+        self.progress_bar.pack_forget()
+        self.collect_btn.config(state=NORMAL)
+        msg = f"✅ 收藏成功: {title[:30]}"
+        if not has_text:
+            msg += "\n⚠ 未获取到全文（微信反爬限制），已保存链接，可点击「打开原文」在浏览器阅读"
+        self.status_var.set(msg)
+        if self.on_done:
+            self.on_done()
+
+    def _on_fail(self, error):
+        self.progress_bar.stop()
+        self.progress_bar.pack_forget()
+        self.collect_btn.config(state=NORMAL)
+        self.status_var.set(f"❌ 收藏失败: {error}")
+
+    def _close(self):
+        self.win.grab_release()
+        self.win.destroy()

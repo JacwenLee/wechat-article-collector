@@ -48,6 +48,19 @@ class Fetcher:
         self.http = http_client or HttpClient()
 
     # ------------------------------------------------------------------
+    def fetch_by_url(self, url) -> ArticleContent:
+        """
+        根据 URL 类型自动选择抓取方式。
+        支持: 微信文章链接(mp.weixin.qq.com) / 搜狗链接(weixin.sogou.com)
+        """
+        if "mp.weixin.qq.com" in url:
+            return self._fetch_wechat_direct(url)
+        elif "weixin.sogou.com" in url:
+            return self.fetch(url)
+        else:
+            return self._fetch_wechat_direct(url)
+
+    # ------------------------------------------------------------------
     def fetch(self, sogou_link) -> ArticleContent:
         """
         从搜狗临时链接抓取文章全文。
