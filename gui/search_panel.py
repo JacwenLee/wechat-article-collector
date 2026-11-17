@@ -174,7 +174,7 @@ class SearchPanel(ttk.Frame):
         # 浏览器工具栏
         browser_bar = ttk.Frame(bottom_pane, bootstyle=SECONDARY)
         browser_bar.pack(fill=X, padx=2, pady=2)
-        self.browser_title_var = ttk.StringVar(value="文章预览")
+        self.browser_title_var = ttk.StringVar(value="文章预览 - 双击文章在此打开")
         ttk.Label(browser_bar, textvariable=self.browser_title_var,
                   font=("微软雅黑", 10, "bold"), bootstyle=INVERSE).pack(side=LEFT, padx=8)
         ttk.Button(browser_bar, text="刷新", bootstyle=(SECONDARY, OUTLINE),
@@ -182,15 +182,20 @@ class SearchPanel(ttk.Frame):
         ttk.Button(browser_bar, text="外部打开", bootstyle=(SECONDARY, OUTLINE),
                    command=self._open_browser_external, width=8).pack(side=RIGHT, padx=4)
 
-        # tkinterweb HtmlFrame
-        try:
-            from tkinterweb import HtmlFrame
-            self.browser_frame = HtmlFrame(bottom_pane, messages_enabled=False)
-            self.browser_frame.pack(fill=BOTH, expand=True, padx=2, pady=2)
+        # 嵌入式浏览器容器 Frame
+        self.browser_container = ttk.Frame(bottom_pane, bootstyle=LIGHT)
+        self.browser_container.pack(fill=BOTH, expand=True, padx=2, pady=2)
+        self.browser_container.bind("<Configure>", self._on_browser_resize)
+
+        # 尝试嵌入 WinForms WebBrowser
+        from gui.embedded_browser import create_embedded_browser
+        result = create_embedded_browser(self.browser_container)
+        if result:
+            self._winforms_browser, self._winforms_form = result
             self._browser_ok = True
-        except Exception:
-            self.browser_frame = ttk.ScrolledText(bottom_pane, font=("微软雅黑", 11), wrap=WORD)
-            self.browser_frame.pack(fill=BOTH, expand=True, padx=2, pady=2)
+        else:
+            self._winforms_browser = None
+            self._winforms_form = None
             self._browser_ok = False
 
         self._current_browser_url = ""
@@ -203,14 +208,12 @@ class SearchPanel(ttk.Frame):
         self._current_browser_url = url
         self.browser_title_var.set(title[:50])
         self.on_status(f"正在加载: {title[:30]}...")
-        if self._browser_ok:
+        if self._browser_ok and self._winforms_browser:
             try:
-                self.browser_frame.load_url(url)
-            except Exception:
-                self.browser_frame.load_html(f"<html><body><h2>加载失败</h2><p>URL: {url}</p></body></html>")
-        else:
-            self.browser_frame.delete("1.0", END)
-            self.browser_frame.insert("1.0", f"加载: {url}\n\n（tkinterweb 不可用，请点击「外部打开」在浏览器中查看）")
+                self._winforms_browser.Navigate(url)
+            except Exception as e:
+                self.on_status(f"加载失败: {e}")
+                return
         self.on_status(f"已加载: {title[:30]}")
 
     def _load_in_browser_resolved(self, sogou_link, title="文章阅读"):
@@ -232,6 +235,12 @@ class SearchPanel(ttk.Frame):
         """刷新当前页面。"""
         if self._current_browser_url:
             self._load_in_browser(self._current_browser_url, self.browser_title_var.get())
+
+    def _on_browser_resize(self, event):
+        """浏览器容器大小变化时调整嵌入窗口。"""
+        if self._winforms_form:
+            from gui.embedded_browser import resize_embedded
+            resize_embedded(self._winforms_form, event.width, event.height)
 
     def _open_browser_external(self):
         """在外部浏览器中打开当前页面。"""
